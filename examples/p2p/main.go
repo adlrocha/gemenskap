@@ -37,10 +37,13 @@ type Block struct {
 	BPM       int
 	Hash      string
 	PrevHash  string
+	Validator string
 }
 
 // Blockchain is a series of validated Blocks
 var Blockchain []Block
+// Temporal blocks before one is selected for the blockchain
+var tempBlocks []Block
 
 var mutex = &sync.Mutex{}
 
@@ -63,7 +66,8 @@ func isBlockValid(newBlock, oldBlock Block) bool {
 
 // SHA256 hashing
 func calculateHash(block Block) string {
-	record := strconv.Itoa(block.Index) + block.Timestamp + strconv.Itoa(block.BPM) + block.PrevHash
+    // Added validator for PoS consensus
+	record := strconv.Itoa(block.Index) + block.Timestamp + strconv.Itoa(block.BPM) + block.PrevHash + block.Validator
 	h := sha256.New()
 	h.Write([]byte(record))
 	hashed := h.Sum(nil)
@@ -71,7 +75,7 @@ func calculateHash(block Block) string {
 }
 
 // create a new block using previous block's hash
-func generateBlock(oldBlock Block, BPM int) Block {
+func generateBlock(oldBlock Block, BPM int, curr_validator string) Block {
 
 	var newBlock Block
 
@@ -82,6 +86,7 @@ func generateBlock(oldBlock Block, BPM int) Block {
 	newBlock.BPM = BPM
 	newBlock.PrevHash = oldBlock.Hash
 	newBlock.Hash = calculateHash(newBlock)
+	newBlock.Validator = curr_validator
 
 	return newBlock
 }
@@ -172,6 +177,7 @@ func readData(rw *bufio.ReadWriter) {
 			mutex.Lock()
 			if len(chain) > len(Blockchain) {
 				Blockchain = chain
+				// Takes the Blockchain interface and marshalls it. Applies indent for formatting purposes.
 				bytes, err := json.MarshalIndent(Blockchain, "", "  ")
 				if err != nil {
 
@@ -186,10 +192,14 @@ func readData(rw *bufio.ReadWriter) {
 	}
 }
 
-func writeData(rw *bufio.ReadWriter) {
+// To read/write we need a buffer to send through the TCP serverls
 
+func writeData(rw *bufio.ReadWriter) {
+    // Infinite loop to host the routine that broadcasts the chain every 5 seconds
 	go func() {
+	    // 
 		for {
+		    // Broadcasts the latest state of the blockchain every 5 seconds.
 			time.Sleep(5 * time.Second)
 			mutex.Lock()
 			bytes, err := json.Marshal(Blockchain)
@@ -199,35 +209,41 @@ func writeData(rw *bufio.ReadWriter) {
 			mutex.Unlock()
 
 			mutex.Lock()
+			//Process of sending the blockchain to other peers
 			rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
 			rw.Flush()
 			mutex.Unlock()
 
 		}
 	}()
-
+    
+    // Reader to get data from console
 	stdReader := bufio.NewReader(os.Stdin)
 
 	for {
 		fmt.Print("> ")
+		// Get the data
 		sendData, err := stdReader.ReadString('\n')
 		if err != nil {
 			log.Fatal(err)
 		}
-
+        // Take the \n out of the string
 		sendData = strings.Replace(sendData, "\n", "", -1)
+		// Converts the int received to string
 		bpm, err := strconv.Atoi(sendData)
 		if err != nil {
 			log.Fatal(err)
 		}
-		newBlock := generateBlock(Blockchain[len(Blockchain)-1], bpm)
-
+		newBlock := generateBlock(Blockchain[len(Blockchain)-1], bpm, "replace Validator ID")
+        
+        // When new data arrives a new block must be generated
 		if isBlockValid(newBlock, Blockchain[len(Blockchain)-1]) {
 			mutex.Lock()
 			Blockchain = append(Blockchain, newBlock)
 			mutex.Unlock()
 		}
-
+        
+        // Send the blockchain with the new block
 		bytes, err := json.Marshal(Blockchain)
 		if err != nil {
 			log.Println(err)
@@ -237,6 +253,7 @@ func writeData(rw *bufio.ReadWriter) {
 
 		mutex.Lock()
 		rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
+		// Clean the buffer
 		rw.Flush()
 		mutex.Unlock()
 	}
@@ -246,7 +263,7 @@ func writeData(rw *bufio.ReadWriter) {
 func main() {
 	t := time.Now()
 	genesisBlock := Block{}
-	genesisBlock = Block{0, t.String(), 0, calculateHash(genesisBlock), ""}
+	genesisBlock = Block{0, t.String(), 0, calculateHash(genesisBlock), "", "replace validator ID"}
 
 	Blockchain = append(Blockchain, genesisBlock)
 
